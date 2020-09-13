@@ -1,0 +1,355 @@
+---
+title: "R Notebook"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+Part I 
+
+1. 
+ Elo, one of the payment brand in Brazil hopes to develop machine learning models to understand the preferences of their customers' lifecycle.The research question is to predict the loyalty scores of the ELo customers. The supporting question is which factors affect the loyalty scores, like transaction behavior of customers and the merchants' information (revenue, location, etc.).
+ 
+2. (The code is in Part II)
+
+The company provides a series of datasets including train, test, merchants, historical transactions and new merchant transactions. I will use all the datasets provided by the company. 
+
+The training dataset includes basic information of each unique card number and loyalty scores. It is used for training models.
+
+The test data is for predicting loyalty scores by a trained model.
+
+The historical transactions dataset includes up to three month's worth of transaction records for each card which can be used to analyze the transaction behavior. 
+
+The new merchant transactions dataset includes two months' worth of data for each card containing all purchases that do not appear in historical data.This is also used for analyzing the customer behavior. 
+
+The merchants dataset gives additional information about all merchants, such as the sales, purchases and active months. It can be used to explore the relationship between customer loyalty and merchant performance.
+
+Advantage: (1) The problem is derived from the real world business where we can make reasonble hypothesis and assumptions from the features, and even apply external domain knowledge to help solve the problem. (2) The datasets are huge with millions of records for training models and abundant detailed information (34 features in total) of customer transactions and merchants.
+
+Limitions: (1) Some features/columns are not clearly stated and some features are anonymized, as it may involve business secrets of the company. This may leads to difficulty to analyze these features. 
+(2) The raw data is not cleaned and needs a lof of preprocessing work. 
+(3) The data provider did not tell how they evaluate the customer loyalty and get the target score.
+
+3. 
+There are several null hypotheses with regards to the research question:
+
+(1) The train dataset contains three categories of cards (feature_1, feature_2, feature_3). We assume the categories of cards do not affect the loyalty score.
+
+(2) Parts of card id appear in new transactions dataset. We assume customers who visit new merchants in the two months after the reference date have the same level of customer loyalty with those who don't appear in new transactions dataset. 
+
+(3) The financial status of a customer may affect the customer loyalty. We assume that the number of installments, purchase frequency and purchase amount does does not affect the loyalty score.
+
+(4) The merchants dataset contains merchants location, category, monthly and yearly purchases and sales that help analyze the merchants' geographical effect and financial effect. We assume merchants have no positive or negative effect on loyalty score.
+
+I would be surprised to find there is no positive correlation between purchase amount and purchase frequency.
+
+4. (the Code and plots are in Part II)
+
+
+Part II Data Exploratory Analysis
+
+1. Data overview
+
+There are hundreds of millions of transaction records in original datasets. I select 1/10 of train data for exploratory analysis.
+```{r}
+#Read csv file to R as flat frame because some datasets are too large (1.3 Gb)
+
+library(ff)
+HisTranData <- read.csv.ffdf(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/historical_transactions.csv", header = TRUE)
+  
+NewTranData <- read.csv.ffdf(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/new_merchant_transactions.csv", header = TRUE)
+
+MerchantData <-read.csv.ffdf(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/merchants.csv", header = TRUE)
+```
+
+```{r}
+#Select 1/10 rows in train data and test data
+
+TestData <- read.csv(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/test.csv", header = TRUE, nrows = 10000)
+
+TrainData <- read.csv(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/train.csv", header = TRUE, nrows = 20000)
+```
+
+```{r}
+# Create subsets of historical, new, and merchant data according to train and test data
+
+HistoricalData <- subset(as.data.frame(HisTranData), (card_id%in% TrainData$card_id) | (card_id%in%TestData$card_id))
+
+NewData <- subset(as.data.frame(NewTranData), (card_id%in% TrainData$card_id) | (card_id%in%TestData$card_id) )
+
+MerchData <- subset(as.data.frame(MerchantData), (merchant_id%in% HistoricalData$merchant_id)| (merchant_id%in%NewData$merchant_id))
+```
+
+1.1 View the first 5 columns and rows from NewData dataset ( question 2)
+
+```{r}
+library("knitr")
+
+kable(head(NewData[1:5, 1:5]),format = "html", caption = "First 5 columns and rows from NewData dataset")
+```
+
+2. Data preprocessing
+
+I firstly drop the redundant feature month_lag (month_lag = reference_date - purchase_date). I filter and keep only authorized transaactions. Besides, the purchase years and months are extracted from purchase date.
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+#New transaction data
+
+temp <- names(NewData) %in% c("month_lag")
+PreNewData <- NewData[!temp]
+
+PreNewData <- subset(PreNewData, authorized_flag == "Y")
+
+dates <- as.Date(PreNewData$purchase_date)
+PreNewData["purchase_month"] <- format(as.POSIXct(dates), "%y/%m")
+
+#Historical transaction data
+
+temp <- names(HistoricalData) %in% c("month_lag")
+PreHistData <- HistoricalData[!temp]
+
+PreHistData <- subset(PreHistData, authorized_flag == "Y")
+
+dates <- as.Date(PreHistData$purchase_date)
+PreHistData["purchase_month"] <- format(as.POSIXct(dates), "%y/%m")
+
+rm(temp)
+rm(dates)
+
+```
+
+
+3. Train data
+
+3.1 Density distribution of loyalty scores
+
+```{r}
+#Draw density line with histogram plot
+
+tmp <- density(TrainData$target)
+
+hist(TrainData$target, prob = TRUE, main = "The density distribution of loyalty score", ylim = c(0, max(tmp$y)), col = "#FFC0CB", ylab = "density", xlab = "loyalty score")
+lines(tmp, col = "#800000")
+
+rm(tmp)
+
+```
+
+Analysis: After observing the plot of loyalty score density distribution, I filter the card ids with loyalty score less than -30 and find they all equal to -33.21928. It is reasonable to guess the loyalty scores less than -30 are outliers and drop them for later analysis.
+
+```{r}
+#Drop records where loyalty score <-30
+
+library(data.table)
+dt_train <- data.table(subset(TrainData, target > -30 ))
+
+```
+
+3.2 Density distribution after removing outliers
+
+```{r}
+
+tmp <- density(dt_train$target)
+
+hist(dt_train$target, prob = TRUE, main = "The density distribution of loyalty score", ylim = c(0, max(tmp$y)), col = "#FFC0CB", ylab = "density", xlab = "loyalty score")
+lines(tmp, col = "#800000")
+
+rm(tmp)
+```
+
+3.3 Loyalty score and first active time
+
+```{r}
+
+#Summarize the mean, first quantile and third quantile of loyalty score over first active month
+
+dt_active <- dt_train %>% group_by(first_active_month) %>%
+  summarize(mean = mean(target), first_quantile = quantile(target, 0.25), third_quantile = quantile(target, 0.75), frequency = n())
+
+#Visualization
+plot(as.numeric(dt_active$first_active_month), dt_active$mean, type="l", col = "red", main = "First active month score distribution", xlab = "first active month",ylab = "average score ", xaxt = "n")
+lines(dt_active$first_quantile, col = "#4682B4", lty = 2)
+lines(dt_active$third_quantile, col = "#8A2BE2", lty = 2)
+legend(50, -1.1, legend = c("mean", "First quantile", "third quantile"), col = c("red", "#4682B4", "#8A2BE2"), lty = c(1, 2, 2), cex = 0.6)
+axis(1, at = c(0,10, 20, 30, 40, 50, 60, 70), c("2011/11","2012/11","2013/11","2014/11","2015/11","2016/11","2017/11","2018/11"))
+```
+
+```{r}
+
+#Plot the frequency plot of card first active month
+
+plot(as.numeric(dt_active$first_active_month), dt_active$frequency, type="l", col = "green", main = "First active month frequency distribution", ylab = "frequency", xlab = "first active month", xaxt = "n")
+axis(1, at = c(0,10, 20, 30, 40, 50, 60, 70), c("2011/11","2012/11","2013/11","2014/11","2015/11","2016/11","2017/11","2018/11"))
+```
+
+Analysis: The two plots above show the loyalty score distribution over first active month. (1) In the first plot, the average score does not show a clear pattern, while the score tends to be more steady in more recent months; (2) There are more first active cards in recent months as indicated in the second plot.
+
+
+3.4 Category analysis
+
+```{r}
+
+#Draw boxplot of loyalty scores for each category(feature_1, feature_2, feature_3)
+
+par(mfrow = c (1, 3))
+
+boxplot(dt_train$target~feature_1, col = c("#4169E1","#FFFACD","#F08080", "#800000", "#F0E68C" ), data = dt_train)
+
+boxplot(dt_train$target~feature_2, col = c("#4169E1","#FFFACD","#F08080" ), data = dt_train)
+
+boxplot(dt_train$target~feature_3, col = c("#4169E1","#FFFACD" ), data = dt_train)
+mtext("Loyalty score for each category",side = 1, line = -22, outer = TRUE, cex = 1.2)
+
+
+```
+
+Analysis: The plot is for exploring the relationship between cards categories and loyalty score. However, the score boxplots within each category are very similar can we cannot tell the difference from plots directly.
+
+
+4. Transaction data
+
+4.1 Historical purchase amount and purchase date
+
+```{r}
+
+barplot(tapply(-PreHistData$purchase_amount, PreHistData$purchase_month, FUN=sum), xlab = "purchase month", ylab = "purchase amount", main = "Historical purchase amount per month", col = "darkred", cex.names = 0.7)
+
+```
+
+4.2 New purchase amount and purchase date
+
+```{r}
+
+barplot(tapply(-PreNewData$purchase_amount, PreNewData$purchase_month, FUN=sum), xlab = "purchase month", ylab = "purchase amount", main = "New purchase amount per month", col = "darkred", cex.names = 0.7)
+
+```
+
+Analysis: these two plots are for analzing the purchase amount over time. The sum of historical purchase amount first increases and then decreases a little with purchase date, while most of the new purchase amount clusters in most recent months.
+
+
+5. Purchase behavior and loyalty score
+
+```{r}
+
+#Merge train dataset and transaction dataset by card id
+
+dt_temp <- data.table(PreHistData)
+
+dt_hist <- dt_temp[, list(purchase_sum = sum(purchase_amount), purchase_freq = .N, installments_avg = mean(installments)), by = c("card_id")] 
+
+setkey(dt_hist, card_id)
+setkey(dt_train, card_id)
+
+merge_hist <-dt_train[dt_hist,nomatch = 0]
+
+rm(dt_hist)
+rm(dt_temp)
+```
+
+5.1 Scatterplot matrix of purchase factors
+
+```{r}
+
+#Draw scatterplot matrix
+
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+{
+usr <- par("usr"); on.exit(par(usr))
+par(usr = c(0, 1, 0, 1))
+r <- abs(cor(x, y))
+txt <- format(c(r, 0.123456789), digits = digits)[1]
+txt <- paste0(prefix, txt)
+if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+text(0.5, 0.5, txt)
+}
+
+panel.lm<-function(x,y,col=par("col"),bg=NA,pch=par("pch"),
+cex=1,col.smooth="black",...){
+points(x,y,pch=pch,col=col,bg=bg,cex=cex)
+abline(stats::lm(y~x),col=col.smooth,...)
+}
+
+pairs(~purchase_sum+purchase_freq+installments_avg+target,data= merge_hist, main="Scatterplot Matrix of \npurchase behavior and loyalty score", col = "#FFB6C1", upper.panel = panel.cor, lower.panel= panel.lm)
+```
+Analysis: the scatter plot matrix is used for analyzing the purchase behavior. It conveys some interesting information. Firstly, the amount of purchase is highly correlated with purchase frequency which is in accordance with the common sense. Secondly, the number of installments has a low correlation with purchase amount and frequency. Thirdly and most importantly, the loyalty score (target) seems not correlated with the three factors. 
+
+5.2 Loyalty score distribution with new transactions
+
+```{r}
+
+#Merge dt_train and dt_new by card_id
+
+dt_temp <- data.table(PreNewData)
+
+dt_new <- dt_temp[, list(purchase_sum = sum(purchase_amount), purchase_freq = .N, installments_avg = mean(installments)), by = c("card_id")] 
+
+setkey(dt_new, card_id)
+setkey(dt_train, card_id)
+
+merge_new <-dt_train[dt_new,nomatch = 0]
+
+#Plot density and compare with historical one
+
+tmp <- density(merge_new$target)
+plot(density(merge_hist$target), main = "The density distribution of loyalty score", ylim = c(0, max(tmp$y)), ylab = "density", xlab = "loyalty score", col = "blue")
+lines(tmp,  col = "red")
+legend(3, 0.35, legend = c("historical distribution", "new distribution"), col = c("red", "blue"), lty = c(1, 2), cex = 0.7)
+
+rm(dt_temp)
+rm(dt_new)
+rm(tmp)
+```
+Analysis: it is surprised to find that the cards with new transactions have almost the same curve as that with historical trancations (no skewness as in the second null hypothesis). It may be bacause 90% (17663 out of 19797 records) cards appear in new transactions dataset.
+
+
+6. Merchant analysis
+
+6.1 Purchases and sales range frequency
+
+```{r}
+library(data.table)
+
+#Most_recent_purchases_range represents range of quantity of transactions in last active month --> A > B > C > D > E
+#most_recent_sales_range represents range of revenue in last active month --> A > B > C > D > E
+dt_merchant <- data.table(MerchData)
+
+par(mfrow = c(1,2))
+barplot(tapply(dt_merchant$merchant_id, as.character(dt_merchant$most_recent_purchases_range), FUN = length), xlab = "purchases range", ylab = "merchant frequency", cex.names = 0.8, col = "#F4A460")
+
+barplot(tapply(dt_merchant$merchant_id, as.character(dt_merchant$most_recent_sales_range), FUN = length), xlab = "sales range", ylab = "merchant frequency", cex.names = 0.8, col = "#F4A460")
+mtext("Purchases and sales range frequency",side = 3, line = -1, outer = TRUE, cex = 1.2)
+
+```
+Analysis: The plots above show the distribution of merchants in purchases range and sales range. Most of merchants’ sales and purchases range are in D and E group (high revenue and quantity of transactions).
+
+6.2 Average sales density distribution
+
+```{r}
+
+#avg_sales_lagN represents	monthly average of revenue in last N months divided by revenue in last active month
+
+plot(density(subset(dt_merchant, avg_sales_lag3 < 5)$avg_sales_lag3, na.rm = TRUE), col = "red", main = "Average sales density with lag months", ylab = "density", xlab = "average sales")
+lines(density(subset(dt_merchant, avg_sales_lag6 < 5)$avg_sales_lag6, na.rm = TRUE), col = "#228B22")
+lines(density(subset(dt_merchant, avg_sales_lag12 < 5)$avg_sales_lag12, na.rm = TRUE), col = "#4682B4")
+legend(3.4, 3, legend = c("3 lag months", "6 lag months", "12 lag months"), col = c("red", "#228B22", "#4682B4"), lty = 1, cex = 0.7)
+
+```
+
+6.3 Average purchases density distribution
+
+```{r}
+
+# avg_purchases_lagN represents monthly average of transactions in last N months divided by transactions in last active month
+
+plot(density(subset(dt_merchant, avg_purchases_lag3 < 5)$avg_purchases_lag3, na.rm = TRUE), col = "red", main = "Average purchases density with lag months", xlab = "average purchases", ylab = "density")
+lines(density(subset(dt_merchant, avg_purchases_lag6 < 5)$avg_purchases_lag6, na.rm = TRUE), col = "#228B22")
+lines(density(subset(dt_merchant, avg_purchases_lag12 < 5)$avg_purchases_lag12, na.rm = TRUE), col = "#4682B4")
+legend(3.4, 3, legend = c("3 lag months", "6 lag months", "12 lag months"), col = c("red", "#228B22", "#4682B4"), lty = 1, cex = 0.7)
+
+```
+Analysis: The curves of average sales amount shows that average of revenue in 3 lag months is most centred, and we can find the similar pattern in purchases amount distribution plot. The revenue and transaction of merchants are more decentralized in the long time. 
+
