@@ -1,0 +1,345 @@
+---
+title: "R Notebook"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+
+1 Analytical methodologies
+
+The exploratory data analysis in Assignment_1 indicates several findings and issues (1) The target score is a continuous variable and the distribution of the target score is bell-shaped. (2) The datasets provides abundant information and various kinds of features. (3) Some important features have low linear correlation with the target loyalty score, which indicates that two variable are linear independent, while these features may have other complicated relations. (4) The data source does not show logic and computational process behind the target loyalty score and the dataset description hides real names of many features as they are confidential business information. This may add difficulties on selecting features and interpreting the model. 
+
+According to the findings and issues, the research question should be answered by regression algorithms that predicts the customer loyalty score. There are several steps: (1) Work on the dataset by removing outliers and preprocessing some categorical features; (2) Split dataset into two parts: 80% training data for training models and 20% test data for testing the model;  (3) Compare two tree based algorithms - Random Forest (RF) and Gradient Boosting Decision Tree (GBDT). RF can deal with high dimensional dataset without feature selection because the feature subsets are randomly selected. After training, it can gives out the importance ranking of features. GBDT uses regression decision trees as weak learner. Trees are added one at a time and a gradient descent procedure is used to minimize the loss; (4) Visualize the feature importance ranking and residuals of the two algorithms; (5) Use root mean square error (RMSE) as the evaluation method to measure the performance of models.
+
+The model can predict the loyalty score for the research question. The ranking of importance can answer the question which features are relevant to the loyalty score.
+
+
+2 Implement the methodologies
+
+2.1 Load and preprocess the data
+```{r warning=FALSE}
+
+#Read csv file to R as flat frame because some datasets are too large (1.3 Gb)
+
+library(ff)
+HisTranData <- read.csv.ffdf(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/historical_transactions.csv", header = TRUE)
+ 
+#NewTranData <- read.csv.ffdf(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/new_merchant_transactions.csv", header = TRUE)
+
+#MerchantData <-read.csv.ffdf(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/merchants.csv", header = TRUE)
+```
+
+```{r}
+#Load the train dataset
+
+TrainData <- read.csv(file = "/Users/apple/Mcgill/692IntroDataScience/kaggleProject/elo-merchant-category-recommendation/train.csv", header = TRUE, nrows = 20000)
+```
+
+```{r}
+# Create subsets of historical transaction dataset according to train dataset
+
+HistoricalData <- subset(as.data.frame(HisTranData), card_id%in% TrainData$card_id )
+
+rm(HisTranData)
+#NewData <- subset(as.data.frame(NewTranData), card_id%in% TrainData$card_id )
+
+#MerchData <- subset(as.data.frame(MerchantData), (merchant_id%in% HistoricalData$merchant_id)| (merchant_id%in%NewData$merchant_id))
+```
+
+```{r warning=FALSE}
+
+#The feature "authorized_flag":	Y' if approved, 'N' if denied
+#Filter historical transactions that are authorized
+
+library(dplyr)
+library(tidyr)
+
+hist_data_process <- subset(HistoricalData, authorized_flag == "Y")
+
+dates <- format(as.Date(hist_data_process$purchase_date), "%Y-%m")
+
+#Add a new feature purchase_month
+
+hist_data_process["purchase_month"] <- dates
+
+#In the historical transaction dataset, one card_id has hundreds of transactions. Summarize the transactions by frequency, amount category and the duration (latest purchase date - earlest purchase date)
+
+library(data.table)
+dt_temp <- data.table(hist_data_process)
+
+dt_hist <- dt_temp[, list(
+  purchase_amount_sum = sum(purchase_amount), 
+  purchase_amount_mean = mean(purchase_amount), 
+  purchase_freq = .N, 
+  installments_mean = mean(installments), 
+  purchase_max_diff = max(month_lag) - min(month_lag),
+  purchase_latest_month = max(purchase_month),
+  purchase_earlest_month = min(purchase_month), 
+  category_1_Y = length(which(category_1 == "Y")), 
+  category_1_N = length(which(category_1 == "N")), 
+  category_2_1 = length(which(category_2 == "1")), 
+  category_2_2 = length(which(category_2 == "2")), 
+  category_2_3 = length(which(category_2 == "3")), 
+  category_2_4 = length(which(category_2 == "4")), 
+  category_2_5 = length(which(category_2 == "5")), 
+  category_3_A = length(which(category_3 == "A")), 
+  category_3_B = length(which(category_3 == "B")), 
+  category_3_C = length(which(category_3 == "C")) ), by = c("card_id")] 
+
+rm(dt_temp)
+rm(dates)
+rm(HistoricalData)
+
+```
+
+```{r}
+#Drop outliers(records where loyalty score <-30) as in Assignment_1
+
+dt_train <- data.table(subset(TrainData, target > -30 ))
+
+rm(TrainData)
+
+```
+
+```{r}
+#Join the train dataset and transaction dataset by card id
+
+setkey(dt_hist, card_id)
+setkey(dt_train, card_id)
+
+merge_hist <-dt_train[dt_hist,nomatch = 0]
+
+```
+
+```{r}
+#The feature "first_active_month":	'YYYY-MM', month of first active use from training data
+
+#The feature "purchase_earlest_month": month of first purchase from historical transactions data
+
+#Add a new column to judge if the purchase_earlest_month  is larger (later) than first_active_month 
+
+merge_hist$judge <- ifelse(as.Date(paste0(merge_hist$first_active_month,"-1",sep="-")) - as.Date(paste0(merge_hist$purchase_earlest_month, "-1", sep = "-")) <= 0, "T", "F")
+
+#The earlest month of purchase must be later than the first active month. Drop these outliers where judge == "N"
+
+merge_hist <- subset(merge_hist, judge == "T")
+
+#Transform character features as factors
+merge_hist$feature_1 <- as.factor(merge_hist$feature_1)
+merge_hist$feature_2 <- as.factor(merge_hist$feature_2)
+merge_hist$feature_3 <- as.factor(merge_hist$feature_3)
+merge_hist$first_active_month <- as.numeric(merge_hist$first_active_month)
+merge_hist$purchase_latest_month <- as.factor(merge_hist$purchase_latest_month)
+merge_hist$purchase_earlest_month <- as.factor(merge_hist$purchase_earlest_month)
+
+rm(dt_hist)
+rm(dt_train)
+```
+
+
+2.2 Data split
+
+```{r}
+#Split the original train dataset as 80% training data and 20% test data randomly
+
+library(caTools)
+
+set.seed(3)
+split <- sample.split(merge_hist$first_active_month, SplitRatio = 0.8)
+
+train_data <- subset(merge_hist, split == TRUE)
+
+test_data <- subset(merge_hist, split == FALSE)
+
+rm(split)
+
+```
+
+
+2.3 Random Forest models and Gradient Boosting Decision Trees
+
+2.3.1 Model and training process
+```{r}
+#RF model
+
+library(randomForest)
+
+set.seed(20)
+
+#Random forest model
+model_rf <- randomForest(target ~ . - judge - card_id - first_active_month - purchase_earlest_month, data = train_data, ntree = 1000, importance = TRUE)
+
+#Plot the training process
+plot(model_rf, main = "Training process of Random Forest")
+```
+
+```{r}
+# GBDT model
+
+library(gbm)
+
+model_gbdt <- gbm(target ~ .-judge- first_active_month - card_id - purchase_earlest_month, data = train_data, n.trees = 1000, shrinkage = 0.01, distribution = "gaussian", cv.folds = 5)
+
+#plot loss function as a result of n trees added to the ensemble
+gbm.perf(model_gbdt, method = "cv")
+mtext("Training process of GBDT", line = 1)
+
+```
+
+The plot of RF shows the Mean Squared Error and the number of trees. The error drops when more trees are added. The error rate stabalizes around 100 trees but continues to decrease slowly. The plot of GBDT model shows that the train error (black line) decreases with the increase of iteration while the error rate by the cross-validation (green line) goes down firstly and increases slowly later on. The optimal number of iterations is around 800 as indicated by the blue line. These two plots show the process of how models are trained and errorness are reduced. The optimal number of trees in models will be applied on test data to predict the customer loyalty score.
+
+2.3.2 Importance ranking
+```{r}
+
+#Use varImp() to calcuate importance of each feature of RF
+
+library(caret)
+imp <- varImp(model_rf)
+
+#compare with importance based on node purity
+imp <- as.data.frame(imp)
+imp$features <- rownames(imp)
+
+#rank the importance of features
+imp <- imp[order(imp[,1]),]
+
+#Barplot for importance ranking
+par(mar = c(4,8,1,4) )
+barplot(imp$Overal, main = "RF: Importance ranking", horiz = TRUE, names.arg = imp$features, las = 1, space = c(1,1,1,1), cex.names = 0.7, xlab = "%IncMSE", col = "lightblue")
+
+```
+
+```{r}
+#summary table of GBDT
+par(mar = c(2, 11, 1, 1))
+summary(model_gbdt, method = relative.influence, n.trees = which.min(model_gbdt$cv.error), las = 2, cBars = 15)
+mtext("GBDT: Relative influence of features")
+
+```
+
+The importance ranking plot* of RF model and the summary table of GBDT model both show the importance ranking of features. The plot of However, the ranks in two plots are not completely consistent due to their different tree generating methods. We can still find that purchase frequency, purchase amount, maximum duration of card use and some category information are important features affecting the loyalty score which meets the hypothesis in Assignment_1. 
+
+*I do not use the summary function of RF model because the summary function for random forest object is not implemented well. It just prints out some internal variables and their types.
+
+2.3.3 Residuals visualization
+```{r}
+
+#residuals for each model
+
+y_test <- test_data$target
+
+#prediction of RF
+pred_rf<- predict(model_rf, newdata = test_data, type = "response")
+
+#prediction of GBDT
+pred_gbdt <- predict(model_gbdt, newdata = test_data, n.trees = which.min(model_gbdt$cv.error), type = "response")
+
+residual_rf <- y_test - pred_rf
+
+residual_gbdt <- y_test - pred_gbdt
+
+#plot the residual distribution
+
+tmp1 <- density(residual_rf)
+tmp2 <- density(residual_gbdt)
+
+par(mfrow = c(1,2))
+hist(residual_rf, prob = TRUE, xlab = "Residual for RF prediction", main = NULL, cex.lab = 0.8, ylim = c(0, max(tmp1$y)))
+lines(tmp1, col = "red")
+hist(residual_gbdt, prob = TRUE, xlab = "Residual for GBDT prediction", main = NULL, cex.lab = 0.8, ylim = c(0, max(tmp2$y)))
+lines(tmp2, col = "blue")
+title("Distribution of residuals", outer = TRUE, line = -1.5)
+
+rm(tmp1)
+rm(tmp2)
+
+```
+
+The two plots are similar. The histogram of the residuals on test data distributed in a bell shape and centred around zero indicates that the regression model predicts and makes mistakes in a random manner and does not systematically over or under predict any particular range of target values. Thus we can accept both regression models for this research question.
+
+
+3 Validation statistics
+
+Root Mean Square Error (RMSE) is a commonly used evaluation method for regression problems. 
+
+According to the results from ranking importance, we can remove some irrevalant features to improve the model and validate their performances by RMSE. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+
+#select features for each algorhtims according to the importance ranking
+
+#model_test1 <- randomForest(target ~ . - judge - card_id - first_active_month - purchase_earlest_month - purchase_latest_month - category_2_2 - feature_3, data = train_data, ntree = 1000)
+
+model_test2 <- randomForest(target ~ . - judge - card_id - first_active_month - purchase_earlest_month - purchase_latest_month - category_2_2 - feature_3 - category_2_4 - category_3_A, data = train_data, ntree = 1000)
+
+#model_test3 <- gbm(target ~ .-judge- first_active_month - card_id - purchase_earlest_month - feature_2 - feature_3 - category_2_4, data = train_data, n.trees = 1000, shrinkage = 0.01, distribution = "gaussian", cv.folds = 5)
+
+model_test4 <- gbm(target ~ .-judge- first_active_month - card_id - purchase_earlest_month - feature_2 - feature_3 - category_2_4 - category_2_2 - category_3_B - category_3_C - category_2_5, data = train_data, n.trees = 1000, shrinkage = 0.01, distribution = "gaussian", cv.folds = 5)
+
+```
+
+```{r}
+#prediction of RF
+pred_rf<- predict(model_test2, newdata = test_data, type = "response")
+
+#optimal number of trees of RF
+trees_rf = which.min(model_test2$mse)
+
+#correspondant RMSE of RF
+rmse_rf_cv = sqrt(model_test2$mse[trees_rf])
+
+#RMSE on test data of RF
+rmse_rf_test = sqrt(mean((test_data$target - pred_rf)^2))
+
+#prediction of GBDT
+pred_gbdt <- predict(model_test4, newdata = test_data, n.trees = which.min(model_test4$cv.error), type = "response")
+
+#optimal number of trees of GBDT
+trees_gbdt = which.min(model_test4$cv.error)
+
+#correspondant RMSE of GBDT
+rmse_gbdt_cv = sqrt(model_test4$cv.error[trees_gbdt])
+
+#RMSE on test data of GBDT
+rmse_gbdt_test = sqrt(mean((test_data$target - pred_gbdt)^2))
+
+#print("Optimal number of trees of RF:")
+trees_rf
+#print("RMSE of RF on cross validation:")
+rmse_rf_cv
+#print("RMSE of RF on test data:")
+rmse_rf_test
+#print("Optimal number of trees of GBDT:")
+trees_gbdt
+#print("RMSE of GBDT on cross validation:")
+rmse_gbdt_cv
+#print("RMSE of GBDT on test data:")
+rmse_gbdt_test
+
+```
+
+The best RF model is model_test2. The optimal number of trees is 931. It has RMSE 1.796 on the test set.
+The best GBDT model is model_test4. The optimal number of trees is 757. It has RMSE 1.757 on the test set.
+
+```{r}
+
+#The best model is model_test4 (GBDT model)
+
+par(mar = c(2, 11, 1, 1))
+summary(model_test4, method = relative.influence, n.trees = which.min(model_test4$cv.error), las = 2, cBars = 10)
+mtext("GBFT: Relative influence of features")
+```
+The optimal model is a GBDT model. The top important features are latest month of purchase, purchase frequency, purchase amount, mean of installments and maximum duration of purchases. All of these features are relevant to the purchase behavior of a card. The purchasing category seems not affect the customer loyalty. However, as the data source does not provide concrete category information of purchase (what the categories actually mean), we can only indicate that these categories are not important for predicting customer loyalty. 
+
+Besides, we can comparing the performance of these two algorithms. RF usually have good and steady performance on general classification or regression problems. However, RF does not perform as well on regression as on classification problems because it cannot predict scores out of the range of training data scores. Instead, GBDT uses regression trees for each node. The RMSE of two models shows that GBDT tends to have better performance for this regression problem.
+
+
+4 Discussion
+
+Firstly, there are some important parameters to be tuned(learning rate in gradient boosting decision trees, maximum number of leaf nodes, the depth of each tree, the number of trees in both algoritms, etc.). We can apply grid search to fine tune these models. 
+
+Secondly, more work can be done on features selection. The dataset of merchant information hasn't been used. It can help analyze the customer purchase behaviour and the effect of some potential merchant features on loyalty scores, but it will probably increase the computational time and the complexity of the model drasticly.
+
