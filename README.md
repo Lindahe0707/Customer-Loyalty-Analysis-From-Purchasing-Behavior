@@ -15,9 +15,13 @@ score (target). The historical transactions dataset contains information about u
 
 Due to the nature of the transactional data, such as one card having multiple transactions from different merchants, it is necessary to merge the transactions of one card into a row and generate some new features by aggregating the amount, frequency and other properties. In addition, some outliers are found and dropped according to the plot of the distribution of the normalized customer loyalty score.
 
+![outliers](outliers.png)
+
 - Exploratory Data Analysis
 
 (1) The plots of loyalty score distribution and first active month show that there are more activated cards and a steady trend of the score in more recent months.
+
+![first_active_month](first_active_month.png)
 
 (2) The scatter plot matrix is used for analyzing some purchase-relevant variables. According to the plot, total amount of purchase is highly correlated with purchase frequency,
 while other variables have low linear correlation with the loyalty score.
