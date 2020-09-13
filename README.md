@@ -52,7 +52,8 @@ The best model is trained by GBDT algorithm and the RMSE on test data is 1.757.
 
 # Finding
 
-In the optimal model of GBDT, the top important features are the latest month of purchase, purchase frequency, purchase amount, mean of installments and maximum duration of purchases. A reasonable guess is that customers who purchase more recently, have high purchase frequency and large amount are very likely to get high loyalty score, which means making new transactions here in the future.
+In the optimal model of GBDT, the top important features are the latest month of purchase, purchase frequency, purchase amount, mean of installments and maximum duration of purchases. The card categories seem not affect the customer loyalty so much. Since the data source does not provide the real category information, it could only be speculated that
+the card categories have little effect on the customer loyalty score (make new transactions) in the future.
 
 
 
