@@ -25,6 +25,7 @@ Due to the nature of the transactional data, such as one card having multiple tr
 
 (2) The scatter plot matrix is used for analyzing some purchase-relevant variables. According to the plot, total amount of purchase is highly correlated with purchase frequency,
 while other variables have low linear correlation with the loyalty score.
+![scatterplot](scatterplot.png)
 
 - Random Forest
 
